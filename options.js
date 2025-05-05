@@ -2,6 +2,7 @@ const blockedSitesList = document.getElementById('blocked-sites-list');
 const siteInput = document.getElementById('site-input');
 const addBtn = document.getElementById('add-btn');
 const messageElement = document.getElementById('message');
+let messageTimeout = null; // Variable to hold the timeout ID
 
 // Load blocked sites from storage when the options page opens
 document.addEventListener('DOMContentLoaded', loadBlockedSites);
@@ -15,17 +16,23 @@ siteInput.addEventListener('keypress', function(event) {
 });
 
 // Function to load blocked sites from storage
-function loadBlockedSites() {
-    chrome.storage.sync.get({blockedSites: []}, function(data) {
-        const blockedSites = data.blockedSites;
-        renderBlockedSites(blockedSites);
-    });
+async function loadBlockedSites() { // Make async
+    try {
+        // Use Promise-based API
+        const data = await chrome.storage.sync.get({ blockedSites: [] });
+        renderBlockedSites(data.blockedSites);
+    } catch (error) {
+        console.error("Error loading blocked sites:", error);
+        displayMessage("Failed to load blocked sites list.", true);
+        // Clear the loading indicator in case of error
+        blockedSitesList.innerHTML = '<li>Error loading list.</li>';
+    }
 }
 
 // Function to render the list of blocked sites in the UI
 function renderBlockedSites(blockedSites) {
-    blockedSitesList.innerHTML = ''; // Clear current list
-    if (blockedSites.length === 0) {
+    blockedSitesList.innerHTML = ''; // Clear current list (including loading indicator)
+    if (!Array.isArray(blockedSites) || blockedSites.length === 0) {
         const li = document.createElement('li');
         li.textContent = "No sites blocked yet.";
         blockedSitesList.appendChild(li);
@@ -33,11 +40,15 @@ function renderBlockedSites(blockedSites) {
     }
     blockedSites.forEach(site => {
         const li = document.createElement('li');
-        li.textContent = site;
+
+        const siteSpan = document.createElement('span');
+        siteSpan.textContent = site; // Display the site as stored
+        li.appendChild(siteSpan);
 
         const removeBtn = document.createElement('button');
         removeBtn.textContent = 'Remove';
         removeBtn.classList.add('remove-btn');
+        removeBtn.setAttribute('aria-label', `Remove ${site}`); // Accessibility
         removeBtn.addEventListener('click', () => removeSite(site));
 
         li.appendChild(removeBtn);
@@ -46,71 +57,91 @@ function renderBlockedSites(blockedSites) {
 }
 
 // Function to add a new site to the blocked list
-function addSite() {
-    let siteToAdd = siteInput.value.trim().toLowerCase();
-
-    // Remove www. prefix if present
-    if (siteToAdd.startsWith('www.')) {
-        siteToAdd = siteToAdd.substring(4);
-    }
+async function addSite() { // Make function async
+    // Keep original casing from input, just trim whitespace
+    let siteToAdd = siteInput.value.trim();
 
     if (!siteToAdd) {
-        displayMessage('Please enter a valid website.', true);
+        displayMessage('Please enter a website domain.', true);
         return;
     }
 
-    // Basic validation: check if it looks like a domain
-    if (!siteToAdd.includes('.') || siteToAdd.startsWith('.') || siteToAdd.endsWith('.')) {
-         displayMessage('Please enter a domain name (e.g., example.com).', true);
+    // Improved domain validation (allows IDNs, basic structure check)
+    // This regex is a reasonable balance, not foolproof for all edge cases.
+    const domainPattern = /^(?:[a-z0-9\u00a1-\uffff](?:[a-z0-9\u00a1-\uffff-]{0,61}[a-z0-9\u00a1-\uffff])?\.)+[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff-]{0,61}[a-z0-9\u00a1-\uffff]$/i;
+    if (!domainPattern.test(siteToAdd)) {
+         displayMessage('Invalid domain format (e.g., example.com or sub.example.co.uk).', true);
          return;
     }
 
-    chrome.storage.sync.get({blockedSites: []}, function(data) {
-        const blockedSites = data.blockedSites;
+    try { // Use try/catch with async/await
+        // Use the Promise-based version of storage API
+        const data = await chrome.storage.sync.get({ blockedSites: [] });
+        const blockedSites = data.blockedSites || []; // Ensure it's an array
 
-        if (blockedSites.includes(siteToAdd)) {
+        // Check for duplicates using case-insensitive comparison
+        if (blockedSites.some(existingSite => existingSite.toLowerCase() === siteToAdd.toLowerCase())) {
+            // Use the user's input casing in the message
             displayMessage(`"${siteToAdd}" is already on the blocked list.`, true);
             return;
         }
 
-        blockedSites.push(siteToAdd);
+        // Add the original input casing
+        const updatedBlockedSites = [...blockedSites, siteToAdd];
 
-        chrome.storage.sync.set({blockedSites: blockedSites}, function() {
-            displayMessage(`"${siteToAdd}" added successfully!`);
-            siteInput.value = ''; // Clear input
-            renderBlockedSites(blockedSites); // Re-render list
-            // The background script listens for storage changes to update blocking rules
-        });
-    });
+        await chrome.storage.sync.set({ blockedSites: updatedBlockedSites });
+        displayMessage(`"${siteToAdd}" added successfully!`);
+        siteInput.value = ''; // Clear input
+        renderBlockedSites(updatedBlockedSites); // Re-render list immediately
+        // Background script will automatically update rules via storage listener
+    } catch (error) {
+        console.error("Error adding site:", error);
+        displayMessage('Error saving site. See console for details.', true);
+    }
 }
 
 // Function to remove a site from the blocked list
-function removeSite(siteToRemove) {
-    chrome.storage.sync.get({blockedSites: []}, function(data) {
-        let blockedSites = data.blockedSites;
+async function removeSite(siteToRemove) { // Make function async
+     try { // Use try/catch with async/await
+        // Use the Promise-based version of storage API
+        const data = await chrome.storage.sync.get({ blockedSites: [] });
+        let blockedSites = data.blockedSites || []; // Ensure it's an array
 
         const initialLength = blockedSites.length;
-        blockedSites = blockedSites.filter(site => site !== siteToRemove);
+        // Filter based on case-insensitive comparison for removal
+        const updatedBlockedSites = blockedSites.filter(site => site.toLowerCase() !== siteToRemove.toLowerCase());
 
-        if (blockedSites.length < initialLength) {
-             chrome.storage.sync.set({blockedSites: blockedSites}, function() {
-                displayMessage(`"${siteToRemove}" removed successfully.`);
-                renderBlockedSites(blockedSites); // Re-render list
-                // The background script listens for storage changes to update blocking rules
-            });
+        if (updatedBlockedSites.length < initialLength) {
+             await chrome.storage.sync.set({ blockedSites: updatedBlockedSites });
+             displayMessage(`"${siteToRemove}" removed successfully.`);
+             renderBlockedSites(updatedBlockedSites); // Re-render list immediately
+             // Background script will automatically update rules via storage listener
         } else {
-             displayMessage(`Error: "${siteToRemove}" not found in the list.`, true);
+            // This case should ideally not happen if the button corresponds to an existing item
+            console.warn(`Attempted to remove "${siteToRemove}" but it was not found.`);
+            displayMessage(`"${siteToRemove}" was not found in the list.`, true);
         }
-    });
+     } catch (error) {
+        console.error("Error removing site:", error);
+        displayMessage('Error removing site. See console for details.', true);
+     }
 }
 
-// Function to display messages to the user
+// Function to display messages and automatically clear them
 function displayMessage(message, isError = false) {
+    // Clear any existing timeout to prevent message flickering
+    if (messageTimeout) {
+        clearTimeout(messageTimeout);
+    }
+
     messageElement.textContent = message;
-    messageElement.className = isError ? 'error' : '';
-    // Optional: Clear message after a few seconds
-    setTimeout(() => {
+    // Use distinct classes for styling success and error messages
+    messageElement.className = isError ? 'error' : 'success';
+
+    // Set timeout to clear the message after 3 seconds
+    messageTimeout = setTimeout(() => {
         messageElement.textContent = '';
-        messageElement.className = '';
-    }, 3000);
+        messageElement.className = ''; // Clear class
+        messageTimeout = null; // Reset timeout ID
+    }, 3000); // 3000 milliseconds = 3 seconds
 }
